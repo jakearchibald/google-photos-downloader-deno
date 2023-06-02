@@ -1,5 +1,6 @@
 import { getTokens, getPhotosFromAlbum, getAlbumIDByTitle } from './google.ts';
 import * as path from 'https://deno.land/std@0.190.0/path/mod.ts';
+import { Throttler } from './utils.ts';
 
 const outPath = 'output';
 const albumTitle = 'RandomBG';
@@ -25,28 +26,32 @@ let complete = 0;
 
 console.log(photosToDownload.length, 'to download');
 
+const throttler = new Throttler(10);
+
 const results = await Promise.allSettled(
-  photosToDownload.map(async (photo) => {
-    const filePath = path.join(outPath, photo.id + '.jpg');
-    const url = photo.baseUrl + '=d';
+  photosToDownload.map((photo) =>
+    throttler.task(async () => {
+      const filePath = path.join(outPath, photo.id + '.jpg');
+      const url = photo.baseUrl + '=d';
 
-    try {
-      const response = await fetch(url);
-      const file = await Deno.open(filePath, {
-        write: true,
-        createNew: true,
-      });
+      try {
+        const response = await fetch(url);
+        const file = await Deno.open(filePath, {
+          write: true,
+          createNew: true,
+        });
 
-      await response.body!.pipeTo(file.writable);
+        await response.body!.pipeTo(file.writable);
 
-      complete += 1;
-      console.log('Downloaded', complete, 'of', photosToDownload.length);
-    } catch (error) {
-      console.log('Failed to download', url);
-      await Deno.remove(filePath);
-      throw error;
-    }
-  }),
+        complete += 1;
+        console.log('Downloaded', complete, 'of', photosToDownload.length);
+      } catch (error) {
+        console.log('Failed to download', url, error);
+        await Deno.remove(filePath);
+        throw error;
+      }
+    }),
+  ),
 );
 
 const failures = results.filter((result) => result.status === 'rejected');

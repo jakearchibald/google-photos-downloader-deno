@@ -1,9 +1,8 @@
-import { getTokens, getPhotosFromAlbum, getAlbumIDByTitle } from './google.ts';
-import * as path from 'https://deno.land/std@0.190.0/path/mod.ts';
+import { getTokens, pickPhotos } from './google.ts';
+import * as path from 'jsr:@std/path';
 import { Throttler } from './utils.ts';
 
 const outPath = 'output';
-const albumTitle = 'RandomBG';
 
 const files = [...Deno.readDirSync(outPath)]
   .filter((item) => item.isFile && item.name.endsWith('.jpg'))
@@ -12,9 +11,8 @@ const files = [...Deno.readDirSync(outPath)]
 const filesSet = new Set(files);
 
 const { access } = await getTokens();
-const albumId = await getAlbumIDByTitle(access, albumTitle);
-console.log('Got album');
-const photos = await getPhotosFromAlbum(access, albumId);
+const photos = await pickPhotos(access);
+
 console.log('Got', photos.length, 'photos');
 
 // Download photos

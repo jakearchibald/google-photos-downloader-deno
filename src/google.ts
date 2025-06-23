@@ -1,4 +1,3 @@
-import { Server } from 'https://deno.land/std@0.190.0/http/server.ts';
 import { generateCodeVerifier } from './utils.ts';
 
 const clientId =
@@ -17,14 +16,13 @@ interface TokenResponse extends RefreshTokenResponse {
 }
 
 export function getTokens(): Promise<TokenResponse> {
-  let server: Server;
+  let server: Deno.HttpServer<Deno.NetAddr> | undefined;
 
   return new Promise<TokenResponse>((resolve, reject) => {
     const codeChallenge = generateCodeVerifier();
-    const port = 3000;
 
-    server = new Server({
-      port,
+    server = Deno.serve({
+      port: 0,
       async handler(request): Promise<Response> {
         const url = new URL(request.url);
 
@@ -82,7 +80,7 @@ export function getTokens(): Promise<TokenResponse> {
       },
     });
 
-    server.listenAndServe();
+    const port = server.addr.port;
 
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     url.searchParams.set('client_id', clientId);
@@ -90,13 +88,13 @@ export function getTokens(): Promise<TokenResponse> {
     url.searchParams.set('response_type', 'code');
     url.searchParams.set(
       'scope',
-      'https://www.googleapis.com/auth/photoslibrary.readonly',
+      'https://www.googleapis.com/auth/photospicker.mediaitems.readonly',
     );
     url.searchParams.set('code_challenge', codeChallenge);
 
     console.log('Visit to authorize:', url.href);
   }).finally(() => {
-    server.close();
+    server?.shutdown();
   });
 }
 
@@ -127,66 +125,54 @@ export async function refreshToken(
   };
 }
 
+interface PickerResponseData {
+  id: string;
+  /** True if the user has selected media items */
+  mediaItemsSet: boolean;
+  pickerUri: string;
+  pollingConfig: {
+    /** A string representing seconds, ending in s, eg '5s' */
+    pollInterval: string;
+  };
+}
+
 interface MediaItem {
   id: string;
   baseUrl: string;
 }
 
-interface AlbumResponse {
-  mediaItems: MediaItem[];
-  nextPageToken?: string;
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function photosFromAlbumRequest(
-  token: string,
-  albumId: string,
-  pageToken = '',
-): Promise<AlbumResponse> {
-  const response = await fetch(
-    'https://photoslibrary.googleapis.com/v1/mediaItems:search',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: 'Bearer ' + token,
-      },
-      body: JSON.stringify({
-        albumId,
-        pageSize: 100,
-        pageToken,
-      }),
+async function createPickerSession(token: string): Promise<string> {
+  const url = new URL('https://photospicker.googleapis.com/v1/sessions');
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + token,
     },
-  );
+  });
 
   if (!response.ok) {
-    throw Error(`Failed to get photos from album: ${await response.text()}`);
+    throw Error(`Failed to create picker session: ${await response.text()}`);
   }
-  return response.json();
-}
 
-export async function getPhotosFromAlbum(
-  token: string,
-  albumId: string,
-): Promise<MediaItem[]> {
-  let pageToken = '';
-  const photos: MediaItem[] = [];
+  let data: PickerResponseData = await response.json();
 
+  console.log(`Pick photos: ${data.pickerUri}`);
+
+  // Await the user picking photos.
   while (true) {
-    const data = await photosFromAlbumRequest(token, albumId, pageToken);
-    photos.push(...data.mediaItems);
-    if (!data.nextPageToken) return photos;
-    pageToken = data.nextPageToken;
-  }
-}
+    if (data.mediaItemsSet) return data.id;
 
-export async function getAlbumIDByTitle(
-  token: string,
-  title: string,
-): Promise<string> {
-  const url = new URL('https://photoslibrary.googleapis.com/v1/albums');
-  url.searchParams.set('pageSize', '50');
+    await wait(parseFloat(data.pollingConfig.pollInterval.slice(0, -1)) * 1000);
 
-  while (true) {
+    const url = new URL(
+      `https://photospicker.googleapis.com/v1/sessions/${data.id}`,
+    );
+
     const response = await fetch(url, {
       headers: {
         Authorization: 'Bearer ' + token,
@@ -194,19 +180,70 @@ export async function getAlbumIDByTitle(
     });
 
     if (!response.ok) {
-      throw Error(`Failed to get albums: ${await response.text()}`);
+      throw Error(`Failed to poll picker session: ${await response.text()}`);
     }
 
-    const data = await response.json();
-
-    for (const album of data.albums) {
-      if (album.title === title) return album.id;
-    }
-
-    if (data.nextPageToken) {
-      url.searchParams.set('pageToken', data.nextPageToken);
-    } else {
-      throw Error('Could not find album');
-    }
+    data = await response.json();
   }
+}
+
+interface PickedMediaItem {
+  id: string;
+  type: 'PHOTO' | 'VIDEO' | 'TYPE_UNSPECIFIED';
+  mediaFile: {
+    baseUrl: string;
+  };
+}
+
+interface MetaItemsResponse {
+  mediaItems: PickedMediaItem[];
+  nextPageToken?: string;
+}
+
+async function getPickedItems(
+  token: string,
+  sessionId: string,
+): Promise<MediaItem[]> {
+  const mediaItems: MediaItem[] = [];
+  let pageToken = '';
+
+  while (true) {
+    const url = new URL(`https://photospicker.googleapis.com/v1/mediaItems`);
+    url.searchParams.set('sessionId', sessionId);
+    url.searchParams.set('pageSize', '100');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: 'Bearer ' + token,
+      },
+    });
+
+    if (!response.ok) {
+      throw Error(`Failed to get picked items: ${await response.text()}`);
+    }
+
+    const data: MetaItemsResponse = await response.json();
+
+    for (const item of data.mediaItems) {
+      if (item.type !== 'PHOTO') {
+        throw Error(`Unexpected item type: ${item.type}`);
+      }
+
+      mediaItems.push({
+        id: item.id,
+        baseUrl: item.mediaFile.baseUrl,
+      });
+    }
+
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
+  }
+
+  return mediaItems;
+}
+
+export async function pickPhotos(token: string): Promise<MediaItem[]> {
+  const sessionId = await createPickerSession(token);
+  return getPickedItems(token, sessionId);
 }

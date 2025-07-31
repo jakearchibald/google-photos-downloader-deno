@@ -1,4 +1,4 @@
-import { getTokens, pickPhotos } from './google.ts';
+import { fetchOriginalPhoto, getTokens, pickPhotos } from './google.ts';
 import * as path from 'jsr:@std/path';
 import { Throttler } from './utils.ts';
 
@@ -30,10 +30,9 @@ const results = await Promise.allSettled(
   photosToDownload.map((photo) =>
     throttler.task(async () => {
       const filePath = path.join(outPath, photo.id + '.jpg');
-      const url = photo.baseUrl + '=d';
 
       try {
-        const response = await fetch(url);
+        const response = await fetchOriginalPhoto(access, photo.baseUrl);
         const file = await Deno.open(filePath, {
           write: true,
           createNew: true,
@@ -44,7 +43,7 @@ const results = await Promise.allSettled(
         complete += 1;
         console.log('Downloaded', complete, 'of', photosToDownload.length);
       } catch (error) {
-        console.log('Failed to download', url, error);
+        console.log('Failed to download', photo.baseUrl, error);
         await Deno.remove(filePath);
         throw error;
       }

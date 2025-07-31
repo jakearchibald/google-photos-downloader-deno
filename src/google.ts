@@ -247,3 +247,14 @@ export async function pickPhotos(token: string): Promise<MediaItem[]> {
   const sessionId = await createPickerSession(token);
   return getPickedItems(token, sessionId);
 }
+
+export function fetchOriginalPhoto(
+  token: string,
+  baseUrl: string,
+): Promise<Response> {
+  return fetch(baseUrl + '=d', {
+    headers: {
+      Authorization: 'Bearer ' + token,
+    },
+  });
+}

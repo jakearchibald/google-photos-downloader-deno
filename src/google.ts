@@ -15,7 +15,13 @@ interface TokenResponse extends RefreshTokenResponse {
   expires: number;
 }
 
-export function getTokens(): Promise<TokenResponse> {
+interface GetTokensOptions {
+  responsePromise?: Promise<Response>;
+}
+
+export function getTokens({
+  responsePromise = Promise.resolve(new Response(`Done!`)),
+}: GetTokensOptions = {}): Promise<TokenResponse> {
   let server: Deno.HttpServer<Deno.NetAddr> | undefined;
 
   return new Promise<TokenResponse>((resolve, reject) => {
@@ -76,7 +82,7 @@ export function getTokens(): Promise<TokenResponse> {
           return new Response(`Something went wrong.`);
         }
 
-        return new Response(`Done!`);
+        return responsePromise;
       },
     });
 
@@ -145,39 +151,46 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function createPickerSession(token: string): Promise<string> {
-  const url = new URL('https://photospicker.googleapis.com/v1/sessions');
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: 'Bearer ' + token,
+export async function createPickerSession(
+  token: string,
+): Promise<PickerResponseData> {
+  const response = await fetch(
+    'https://photospicker.googleapis.com/v1/sessions',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+      },
     },
-  });
+  );
 
   if (!response.ok) {
     throw Error(`Failed to create picker session: ${await response.text()}`);
   }
 
-  let data: PickerResponseData = await response.json();
+  return await response.json();
+}
 
-  console.log(`Pick photos: ${data.pickerUri}`);
+export async function awaitItemsPicked(
+  token: string,
+  session: PickerResponseData,
+) {
+  let data = session;
 
   // Await the user picking photos.
   while (true) {
-    if (data.mediaItemsSet) return data.id;
+    if (data.mediaItemsSet) return;
 
     await wait(parseFloat(data.pollingConfig.pollInterval.slice(0, -1)) * 1000);
 
-    const url = new URL(
+    const response = await fetch(
       `https://photospicker.googleapis.com/v1/sessions/${data.id}`,
-    );
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: 'Bearer ' + token,
+      {
+        headers: {
+          Authorization: 'Bearer ' + token,
+        },
       },
-    });
+    );
 
     if (!response.ok) {
       throw Error(`Failed to poll picker session: ${await response.text()}`);
@@ -200,7 +213,7 @@ interface MetaItemsResponse {
   nextPageToken?: string;
 }
 
-async function getPickedItems(
+export async function getPickedItems(
   token: string,
   sessionId: string,
 ): Promise<MediaItem[]> {
@@ -243,18 +256,17 @@ async function getPickedItems(
   return mediaItems;
 }
 
-export async function pickPhotos(token: string): Promise<MediaItem[]> {
-  const sessionId = await createPickerSession(token);
-  return getPickedItems(token, sessionId);
-}
-
-export function fetchOriginalPhoto(
+export async function fetchOriginalPhoto(
   token: string,
   baseUrl: string,
 ): Promise<Response> {
-  return fetch(baseUrl + '=d', {
+  const response = await fetch(baseUrl + '=d', {
     headers: {
       Authorization: 'Bearer ' + token,
     },
   });
+
+  if (!response.ok) throw Error(response.statusText);
+
+  return response;
 }

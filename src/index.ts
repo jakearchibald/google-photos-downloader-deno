@@ -1,4 +1,10 @@
-import { fetchOriginalPhoto, getTokens, pickPhotos } from './google.ts';
+import {
+  awaitItemsPicked,
+  createPickerSession,
+  fetchOriginalPhoto,
+  getPickedItems,
+  getTokens,
+} from './google.ts';
 import * as path from 'jsr:@std/path';
 import { Throttler } from './utils.ts';
 
@@ -10,8 +16,15 @@ const files = [...Deno.readDirSync(outPath)]
 
 const filesSet = new Set(files);
 
-const { access } = await getTokens();
-const photos = await pickPhotos(access);
+const { promise: responsePromise, resolve: resolveResponsePromise } =
+  Promise.withResolvers<Response>();
+
+const { access } = await getTokens({ responsePromise });
+const session = await createPickerSession(access);
+resolveResponsePromise(Response.redirect(session.pickerUri));
+await awaitItemsPicked(access, session);
+
+const photos = await getPickedItems(access, session.id);
 
 console.log('Got', photos.length, 'photos');
 
